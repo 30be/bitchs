@@ -1,14 +1,18 @@
 -- Credits to https://github.com/andreacorbellini/ecc/blob/master/scripts/ecdhe.py
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
 
 module Main where
 
 import Data.Bits ((.&.), (.>>.))
+import qualified Data.ByteString as B
+import qualified Data.ByteString.Char8 as BC8
 import Data.List (unfoldr)
 import Numeric (showHex)
-import System.Random (randomR, randomRIO)
+import SHA256 (bytesToInt, hash)
+import System.Random (randomRIO)
 import Text.Printf (printf)
 
 -- | [(x,y) | (y^2 - x^3 - a*x - b) `mod` modulus == 0, 4 * a^3 + 27 * b^2 /= 0] <> [0]
@@ -116,6 +120,16 @@ testKeyExchange = do
   let secret2 = scalarMultiply bobPrivate alicePublic
   putStrLn $ if secret1 == secret2 then "Secrets match!" else "Mismatch: " <> show secret1 <> " vs " <> show secret2
 
+testSHA :: IO ()
+testSHA = do
+  checkHash "" 0xe3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+  checkHash "hello" 0x2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+  where
+    checkHash s desired = do
+      let emptyStringHash = bytesToInt (32 * 8) $ B.unpack $ hash s :: Integer
+      BC8.putStrLn $ if emptyStringHash == desired then "Successful hash!" else "Hash failed. See: " <> BC8.pack (showHex emptyStringHash "")
+
 main :: IO ()
 main = do
   testKeyExchange
+  testSHA
