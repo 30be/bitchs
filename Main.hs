@@ -2,6 +2,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
 
 module Main where
@@ -10,6 +11,7 @@ import Data.Bits ((.&.), (.>>.))
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as BC8
 import Data.List (unfoldr)
+import GHC.Num (integerLog2)
 import Numeric (showHex)
 import SHA256 (bytesToInt, hash)
 import System.Random (randomRIO)
@@ -120,6 +122,38 @@ testKeyExchange = do
   let secret2 = scalarMultiply bobPrivate alicePublic
   putStrLn $ if secret1 == secret2 then "Secrets match!" else "Mismatch: " <> show secret1 <> " vs " <> show secret2
 
+hashMessage :: B.ByteString -> Integer
+hashMessage = (.>>. extraBits) . (bytesToInt @Integer) bits . B.unpack . hash
+  where
+    bits = 32 * 8
+    extraBits = bits - fromIntegral (integerLog2 curve.order)
+
+signMessage :: Integer -> B.ByteString -> IO (Integer, Integer)
+signMessage privateKey message = do
+  k <- randomRIO (1, curve.order)
+  let p = scalarMultiply k curve.basePoint
+      r = p.x `mod` curve.order
+      s = ((hashMessage message + r * privateKey) * inverseMod k curve.order) `mod` curve.order
+  if s == 0 || r == 0
+    then signMessage privateKey message -- Just try again
+    else pure (r, s)
+
+verifySignature :: Point -> B.ByteString -> (Integer, Integer) -> Bool
+verifySignature publicKey message (r, s) = (r `mod` curve.order) == (p.x `mod` curve.order)
+  where
+    -- p = u1*basePoint + u2*publicKey
+    -- p = u1*basePoint + u2*privateKey*basePoint       -- publicKey = privateKey * basePoint
+    -- p = (u1 + u2*privateKey) * basePoint             -- distributivity (why?)
+    -- p = (hash / s + r / s * privateKey) * basePoint  -- substitute u1, u2
+    -- p = (hash + r * privateKey)/s * basePoint        -- substitute u1, u2
+    -- p = k * basePoint                                -- s = (hash + r * privateKey) / k
+    -- p.x == r                                         -- r = (k * basePoint).x
+    -- So we have generated the same point p as in signMessage, but without knowing the secret k.
+    w = inverseMod s curve.order
+    u1 = (hashMessage message * w) `mod` curve.order
+    u2 = (r * w) `mod` curve.order
+    p = add (scalarMultiply u1 curve.basePoint) (scalarMultiply u2 publicKey)
+
 testSHA :: IO ()
 testSHA = do
   checkHash "" 0xe3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
@@ -129,7 +163,22 @@ testSHA = do
       let emptyStringHash = bytesToInt (32 * 8) $ B.unpack $ hash s :: Integer
       BC8.putStrLn $ if emptyStringHash == desired then "Successful hash!" else "Hash failed. See: " <> BC8.pack (showHex emptyStringHash "")
 
+testSigning :: IO ()
+testSigning = do
+  (private, public) <- mkKeypair
+  (falsePrivate, _) <- mkKeypair
+  let message = "CGSG FOREVER"
+  signature <- signMessage private message
+  falseSignature1 <- signMessage private "Some other message"
+  falseSignature2 <- signMessage falsePrivate message
+  BC8.putStrLn $ "message: " <> message
+  BC8.putStrLn $ "signature: " <> BC8.pack (show signature)
+  putStrLn $ if verifySignature public message signature then "The true signature was succesfully verified" else "The signature was not verified"
+  putStrLn $ if verifySignature public message falseSignature1 then "The false signature 1 was verified" else "The false signature 1 was not verified"
+  putStrLn $ if verifySignature public message falseSignature2 then "The false signature 2 was verified" else "The false signature 2 was not verified"
+
 main :: IO ()
 main = do
   testKeyExchange
   testSHA
+  testSigning

@@ -10,7 +10,7 @@ build-type:         Simple
 executable echs
     ghc-options: -Wall
     main-is:          Main.hs
-    other-modules: SHA256
+    other-modules:    SHA256, RSA
     build-depends:    base ^>=4.18.3.0, random, bytestring
     hs-source-dirs:   .
     default-language: Haskell2010

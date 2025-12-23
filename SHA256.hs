@@ -54,5 +54,5 @@ chunksOf :: Int -> [a] -> [[a]]
 chunksOf _ [] = []
 chunksOf n xs = take n xs : chunksOf n (drop n xs)
 
-bytesToInt :: (Bits b, Integral a, Num b) => Int -> [a] -> b
+bytesToInt :: (Bits b, Num b) => Int -> [Word8] -> b
 bytesToInt bits = foldl1 (.|.) . flip (zipWith (.<<.)) [bits - 8, bits - 16 .. 0] . map fromIntegral
