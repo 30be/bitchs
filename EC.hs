@@ -112,10 +112,10 @@ mkKeypairFromString string = (private, public)
     public = scalarMultiply private curve.basePoint
 
 hashMessage :: B.ByteString -> Integer
-hashMessage = (.>>. extraBits) . SHA256.bytesToInt . B.unpack . SHA256.hash
+hashMessage = (.>>. extraBits) . SHA256.bytesToInt . B.unpack . SHA256.hash . SHA256.hash
   where
-    bits = 32 * 8
-    extraBits = bits - fromIntegral (integerLog2 curve.order)
+    bits = 256 -- Currently just dead code (our curve is already 256 bit as the hash), present for generality
+    extraBits = bits - fromIntegral (integerLog2 curve.order + 1) -- Log rounds down
 
 data Signature = Signature Integer Integer deriving (Eq, Show)
 
@@ -124,7 +124,8 @@ signMessage privateKey message = do
   k <- randomRIO (1, curve.order)
   let p = scalarMultiply k curve.basePoint
       r = p.x `mod` curve.order
-      s = ((hashMessage message + r * privateKey) * inverseMod k curve.order) `mod` curve.order
+      s_raw = ((hashMessage message + r * privateKey) * inverseMod k curve.order) `mod` curve.order
+      s = if s_raw > curve.order `div` 2 then curve.order - s_raw else s_raw
   if s == 0 || r == 0
     then signMessage privateKey message -- Just try again
     else pure $ Signature r s
@@ -135,7 +136,8 @@ signMessage' privateKey message k = Signature r s
   where
     p = scalarMultiply k curve.basePoint
     r = p.x `mod` curve.order
-    s = ((hashMessage message + r * privateKey) * inverseMod k curve.order) `mod` curve.order
+    s_raw = ((hashMessage message + r * privateKey) * inverseMod k curve.order) `mod` curve.order
+    s = if s_raw > curve.order `div` 2 then curve.order - s_raw else s_raw
 
 verifySignature :: Point -> B.ByteString -> Signature -> Bool
 verifySignature publicKey message (Signature r s) = (r `mod` curve.order) == (p.x `mod` curve.order)

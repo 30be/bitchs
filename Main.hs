@@ -9,13 +9,17 @@ module Main where
 
 import Bitcoin (IsCompressed (Compressed), IsHashed (..), Script (Script), Tx (..), TxIn (..), TxOut (..), testIdentity)
 import qualified Bitcoin as BTC
+import Control.Monad ((>=>))
 import qualified Data.ByteString as B
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8
 import EC (Point (..), mkKeypair, scalarMultiply, signMessage, signMessage', verifySignature)
 import Numeric (showHex)
-import SHA256 (bytesToInt)
 import qualified SHA256
+import Text.Printf (printf)
+
+toHex :: BS.ByteString -> String
+toHex = BS.unpack >=> printf "%02x"
 
 testKeyExchange :: IO ()
 testKeyExchange = do
@@ -102,11 +106,18 @@ testBlockChain = do
       encodedTransaction = BTC.encodeTx Nothing tx
   putStrLn $ "Alice's " <> show alice
   putStrLn $ "Bob's " <> show bob
-  putStrLn $ const "Bob's hash (should match with the faucet's one):" <> showHex (SHA256.bytesToInt $ BS.unpack bob_pkb_hash) $ ""
-  putStrLn $ const "transaction:" <> showHex (SHA256.bytesToInt $ BS.unpack encodedTransaction) $ ""
+  putStrLn $ "Bob's hash (should match with the faucet's one):" <> toHex bob_pkb_hash
+  putStrLn $ "transaction: " <> toHex encodedTransaction
   -- Then I just broadcast it with an online service: https://blockstream.info/testnet/tx/push
   putStrLn $ "transaction length in bytes (should be about 225):" <> show (BS.length encodedTransaction)
   putStrLn $ const "transaction link (wait a little): https://mempool.space/testnet/tx/" <> showHex (BTC.txId tx) $ ""
+
+  -- It did work!!! SO cool.
+  -- Now let's send the money back to the faucet
+  --
+  -- ...
+  --
+  -- Some time later
 
   return ()
 
