@@ -1,5 +1,5 @@
+{-# LANGUAGE OverloadedLists #-}
 -- Credits to https://github.com/andreacorbellini/ecc/blob/master/scripts/ecdhe.py
-{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeApplications #-}
@@ -7,112 +7,20 @@
 
 module Main where
 
-import Data.Bits ((.&.), (.>>.))
+import Bitcoin (Script (Script), TxIn (..), TxOut (..), testIdentity)
+import qualified Bitcoin as BTC
 import qualified Data.ByteString as B
+import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8
-import Data.List (unfoldr)
-import GHC.Num (integerLog2)
+import EC (Curve (..), Point (..), mkKeypair, mkKeypairFromString, scalarMultiply, signMessage, verifySignature)
 import Numeric (showHex)
-import SHA256 (bytesToInt, hash)
-import System.Random (randomRIO)
-import Text.Printf (printf)
-
--- | [(x,y) | (y^2 - x^3 - a*x - b) `mod` modulus == 0, 4 * a^3 + 27 * b^2 /= 0] <> [0]
-data Curve = Curve
-  { modulus :: Integer,
-    a :: Integer,
-    b :: Integer,
-    basePoint :: Point,
-    order :: Integer,
-    cofactor :: Integer
-  }
-
-data Point = ZeroPoint | Point {x :: Integer, y :: Integer} deriving (Show, Eq)
-
-curve :: Curve -- secp256k1
-curve =
-  Curve
-    { modulus = 0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f, -- a big prime, 2^256 - 2^32 - 977, Mersenne-like (for efficiency)
-      a = 0, -- For efficiency
-      b = 7, -- smallest positive integer with a prime number of points
-      basePoint =
-        Point
-          { x = 0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798, -- nothing-up-my-sleeve agreed upon point, doesn't really matter
-            y = 0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8
-          },
-      order = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141, -- amount of points in the group, got that with Schoof’s algorithm
-      cofactor = 1 -- cofactor * cyclic_multiplicative_subgroup_order = order
-    }
-
--- | get (x,y,gcd) such that ax + by = gcd
-extEuclid :: Integer -> Integer -> (Integer, Integer, Integer)
-extEuclid 0 b = (0, 1, b)
-extEuclid a b = (y1 - x1 * (b `div` a), x1, gcd)
-  where
-    (x1, y1, gcd) = extEuclid (b `mod` a) a
-
--- | get x such that (x * k) % p == 1
--- basically, 1/k
-inverseMod :: Integer -> Integer -> Integer
-inverseMod 0 _ = error "divisionByZero"
-inverseMod k p
-  | k < 0 = p - inverseMod (-k) p
-  | g == 1 = (x `mod` p + p) `mod` p
-  | otherwise = error $ printf "%d and %d are not coprime, somehow gcd=%d" k p g
-  where
-    -- "x * k + yp = gcd" becomes x * k == 1 (mod p) because gcd==1 and yp % p == 0
-    (x, _, g) = extEuclid k p
-
--- | Check if the curve contains a given point
-isOnCurve :: Point -> Bool
-isOnCurve ZeroPoint = False
-isOnCurve Point {x, y} = (y * y - x * x * x - curve.a * x - curve.b) `mod` curve.modulus == 0
-
--- | Return the negative of a point
-neg :: Point -> Point
-neg ZeroPoint = ZeroPoint
-neg Point {x, y} = Point x (negate y `mod` curve.modulus)
-
--- | Add two points together according to the group law
-add :: Point -> Point -> Point
-add p ZeroPoint = p
-add ZeroPoint p = p
-add p1 p2
-  | not $ isOnCurve p1 = error $ show p1 <> " is not on curve"
-  | not $ isOnCurve p2 = error $ show p2 <> " is not on curve"
-  | p1.x == p2.x && p1.y /= p2.y = ZeroPoint
-  | otherwise = Point (xIntersect `mod` curve.modulus) (negate yIntersect `mod` curve.modulus)
-  where
-    -- slope of the line p1->p2
-    m =
-      if p1.x == p2.x
-        then (3 * p1.x * p1.x + curve.a) * inverseMod (2 * p1.y) curve.modulus -- p1 == p2 -- Got that from taking the derivative
-        else (p1.y - p2.y) * inverseMod (p1.x - p2.x) curve.modulus -- p1 /= p2 - really just slope! multiplying by the inverse modulus is just division
-    xIntersect = m * m - p1.x - p2.x
-    yIntersect = p1.y + m * (xIntersect - p1.x)
-
--- | k * point computed using the double-and-add algorithm
-scalarMultiply :: Integer -> Point -> Point
-scalarMultiply _ ZeroPoint = ZeroPoint
-scalarMultiply k p
-  | k `mod` curve.order == 0 = ZeroPoint
-  | k < 0 = scalarMultiply (-k) (neg p)
-  | otherwise = foldl add ZeroPoint $ unfoldr handleBit (k, p)
-  where
-    handleBit :: (Integer, Point) -> Maybe (Point, (Integer, Point))
-    handleBit (k, acc) = if k == 0 then Nothing else Just (if k .&. 1 == 1 then acc else ZeroPoint, (k .>>. 1, acc `add` acc))
-
-mkKeypair :: IO (Integer, Point)
-mkKeypair = do
-  privateKey <- randomRIO (1, curve.order)
-  let publicKey = scalarMultiply privateKey curve.basePoint
-  return (privateKey, publicKey)
+import qualified SHA256
 
 testKeyExchange :: IO ()
 testKeyExchange = do
   (alicePrivate, alicePublic) <- mkKeypair
   putStrLn $ "Alice's private key: " <> showHex alicePrivate ""
-  putStrLn $ (const "Alice's public key: " <> showHex alicePublic.x <> const ", " <> showHex alicePublic.y) ""
+  putStrLn $ (const "Alice's public key: " <> (showHex @Integer) alicePublic.x <> const ", " <> showHex alicePublic.y) ""
 
   (bobPrivate, bobPublic) <- mkKeypair
   putStrLn $ "Bob's private key: " <> showHex bobPrivate ""
@@ -122,45 +30,13 @@ testKeyExchange = do
   let secret2 = scalarMultiply bobPrivate alicePublic
   putStrLn $ if secret1 == secret2 then "Secrets match!" else "Mismatch: " <> show secret1 <> " vs " <> show secret2
 
-hashMessage :: B.ByteString -> Integer
-hashMessage = (.>>. extraBits) . (bytesToInt @Integer) bits . B.unpack . hash
-  where
-    bits = 32 * 8
-    extraBits = bits - fromIntegral (integerLog2 curve.order)
-
-signMessage :: Integer -> B.ByteString -> IO (Integer, Integer)
-signMessage privateKey message = do
-  k <- randomRIO (1, curve.order)
-  let p = scalarMultiply k curve.basePoint
-      r = p.x `mod` curve.order
-      s = ((hashMessage message + r * privateKey) * inverseMod k curve.order) `mod` curve.order
-  if s == 0 || r == 0
-    then signMessage privateKey message -- Just try again
-    else pure (r, s)
-
-verifySignature :: Point -> B.ByteString -> (Integer, Integer) -> Bool
-verifySignature publicKey message (r, s) = (r `mod` curve.order) == (p.x `mod` curve.order)
-  where
-    -- p = u1*basePoint + u2*publicKey
-    -- p = u1*basePoint + u2*privateKey*basePoint       -- publicKey = privateKey * basePoint
-    -- p = (u1 + u2*privateKey) * basePoint             -- distributivity (why?)
-    -- p = (hash / s + r / s * privateKey) * basePoint  -- substitute u1, u2
-    -- p = (hash + r * privateKey)/s * basePoint        -- substitute u1, u2
-    -- p = k * basePoint                                -- s = (hash + r * privateKey) / k
-    -- p.x == r                                         -- r = (k * basePoint).x
-    -- So we have generated the same point p as in signMessage, but without knowing the secret k.
-    w = inverseMod s curve.order
-    u1 = (hashMessage message * w) `mod` curve.order
-    u2 = (r * w) `mod` curve.order
-    p = add (scalarMultiply u1 curve.basePoint) (scalarMultiply u2 publicKey)
-
 testSHA :: IO ()
 testSHA = do
   checkHash "" 0xe3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
   checkHash "hello" 0x2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
   where
     checkHash s desired = do
-      let emptyStringHash = bytesToInt (32 * 8) $ B.unpack $ hash s :: Integer
+      let emptyStringHash = SHA256.bytesToInt $ B.unpack $ SHA256.hash s
       BC8.putStrLn $ if emptyStringHash == desired then "Successful hash!" else "Hash failed. See: " <> BC8.pack (showHex emptyStringHash "")
 
 testSigning :: IO ()
@@ -177,8 +53,49 @@ testSigning = do
   putStrLn $ if verifySignature public message falseSignature1 then "The false signature 1 was verified" else "The false signature 1 was not verified"
   putStrLn $ if verifySignature public message falseSignature2 then "The false signature 2 was verified" else "The false signature 2 was not verified"
 
+testBlockChain :: IO ()
+testBlockChain = do
+  let alice = testIdentity "ALICE CGSG forever" -- address : n3yw3oygzfJ5sZxfKjDKeA4EqZKdqfEAHZ
+      bob = testIdentity "BOB CGSG forever" -- address : mpoAqtJpdZbWoMEsr2Cod9fPNwpi9HHkWg
+      -- https://mempool.space/testnet/tx/30cfb03e95b700b27dec4e42d172bc779eb85957d5b16f67da696a7588c07e64
+      opDup = [118]
+      opHash160 = [169]
+      opEqualVerify = [136]
+      opCheckSig = [172]
+      txIdHash = SHA256.wordToByteString 20 (0x65ca433e32228302b9bc76c87d7e83742ae2f69d :: Integer) -- Serialized public key - it was computed by the faucet from the provided address
+      bob_pkb_hash = BTC.encodePublicKey bob.public True True -- the same as txIdHash; it shows who is the owner of the cash now.
+      alice_pkb_hash = BTC.encodePublicKey alice.public True True
+      -- This is a transaction from a btc-testnet faucet to Bob (tx=transaction)
+      txIn =
+        BTC.TxIn
+          { prevTx = SHA256.wordToByteString 32 (0x30cfb03e95b700b27dec4e42d172bc779eb85957d5b16f67da696a7588c07e64 :: Integer),
+            prevIndex = 1, -- 0th index came to the sender back (they did not spend the entirety of their money)
+            scriptSig = Script [opDup, opHash160, txIdHash, opEqualVerify, opCheckSig], -- Common pattern
+            _sequence = 0xffffffff
+          }
+      txToAlice =
+        TxOut
+          { amount = 50000,
+            scriptPubkey = Script [opDup, opHash160, alice_pkb_hash, opEqualVerify, opCheckSig] -- We are sending 50 000 satoshi to alice
+          }
+
+      txBack =
+        TxOut
+          { amount = 49000, -- Actually, just 136 sat was enough fee to transfer what we had, but I set a 1000 to be sure
+            scriptPubkey = Script [opDup, opHash160, bob_pkb_hash, opEqualVerify, opCheckSig] -- We are sending 50 000 satoshi to alice
+          }
+  -- The rest goes to Bob back, with 2500 of them as fee
+
+  -- At each transaction, we are spending the entirety of money received.
+  putStrLn $ "Alice's " <> show alice
+  putStrLn $ "Bob's " <> show bob
+  putStrLn $ const "Bob's hash (should match with the faucet's one):" <> showHex (SHA256.bytesToInt $ BS.unpack bob_pkb_hash) $ ""
+  return ()
+
 main :: IO ()
 main = do
-  testKeyExchange
-  testSHA
-  testSigning
+  testBlockChain
+
+-- testKeyExchange
+-- testSHA
+-- testSigning

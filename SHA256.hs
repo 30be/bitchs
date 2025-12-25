@@ -17,16 +17,17 @@ k = [0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x9
 
 -- Big-endian conversion (standard for SHA-512)
 wordToByteString :: (Integral a, Bits a) => Int -> a -> B.ByteString
-wordToByteString bits n = B.pack $ fromIntegral . (n .>>.) <$> [bits - 8, bits - 16 .. 0]
+wordToByteString bytes n = B.pack $ fromIntegral . (n .>>.) <$> [(bytes - 1) * 8, (bytes - 2) * 8 .. 0]
 
 -- | Pad the message to be in 512-chunks
 pad :: B.ByteString -> B.ByteString
 pad msg = msg <> B.pack [0x80] <> B.replicate (zeros `div` 8) 0 <> lengthAs64BitInt
   where
     zeros = (512 - 64 - bits - 1) `mod` 512
-    lengthAs64BitInt = wordToByteString 64 (fromIntegral bits :: Word64)
+    lengthAs64BitInt = wordToByteString 8 (fromIntegral bits :: Word64)
     bits = B.length msg * 8
 
+-- | Scramble the hash against the next chunk of data
 applyChunk :: [Word32] -> [Word32] -> [Word32]
 applyChunk hash_in chunk = zipWith (+) hash_in $ foldl round hash_in (zip k w)
   where
@@ -45,14 +46,19 @@ applyChunk hash_in chunk = zipWith (+) hash_in $ foldl round hash_in (zip k w)
     round _ _ = error "Should never happen"
 
 hash :: B.ByteString -> B.ByteString
-hash = foldl1 mappend . map (wordToByteString 32) . foldl applyChunk initialHash . map groupWords . chunksOf 64 . B.unpack . pad
+hash = foldl1 mappend . map (wordToByteString 4) . foldl applyChunk initialHash . map groupWords . chunksOf 64 . B.unpack . pad
 
+-- | Group by 4 and turn each group to 1 32-bit integer
 groupWords :: [Word8] -> [Word32]
-groupWords = map (bytesToInt 32) . chunksOf 4
+groupWords = map (fromIntegral . bytesToInt) . chunksOf 4
 
+-- | Split a list by chunks of size n
 chunksOf :: Int -> [a] -> [[a]]
 chunksOf _ [] = []
 chunksOf n xs = take n xs : chunksOf n (drop n xs)
 
-bytesToInt :: (Bits b, Num b) => Int -> [Word8] -> b
-bytesToInt bits = foldl1 (.|.) . flip (zipWith (.<<.)) [bits - 8, bits - 16 .. 0] . map fromIntegral
+-- Turn a sequence of bytes, containing n bits to an Integer
+bytesToInt :: [Word8] -> Integer
+bytesToInt bytes = foldr (.|.) 0 $ zipWith (.<<.) (fromIntegral <$> bytes) [bits - 8, bits - 16 .. 0]
+  where
+    bits = length bytes * 8
