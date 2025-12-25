@@ -2,32 +2,35 @@
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
+{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
+
+-- Interferes with the OverloadedLists extension
+{-# HLINT ignore "Use list comprehension" #-}
 
 module Bitcoin where
 
 -- This all can be optimized with the bytestring builder if wanted
 import Data.Bits (Bits, (.>>.))
 import qualified Data.ByteString as BS
-import EC (Point (..), mkKeypairFromString)
-import GHC.IO.Encoding (BufferCodec (encode))
+import EC (Point (..), Signature (Signature), mkKeypairFromString)
 import qualified RIPEMD160
 import qualified SHA256
 
+data IsCompressed = Compressed | NotCompressed
+
+data IsHashed = Hashed | NotHashed
+
 -- | Serialize the key into just 20 bytes
-encodePublicKey :: Point -> Bool -> Bool -> BS.ByteString
-encodePublicKey key compress hash =
-  if hash
-    -- We take hash of a hash for two reasons:
-    -- 1. SHA256 can be attacked by length extension attacks ???
-    -- 2. RIPEMD160 is 20 bytes instead of SHA256's 32 - space efficiency
-    then RIPEMD160.hash $ SHA256.hash pkb
-    else pkb
-  where
-    compress_prefix = [if even key.y then 2 else 3]
-    pkb =
-      if compress
-        then compress_prefix <> SHA256.wordToByteString 32 key.x -- y can be derived from x given the parity
-        else [4] <> SHA256.wordToByteString 32 key.x <> SHA256.wordToByteString 32 key.y -- elliptic curve coordinates are 32 byte
+encodePublicKey :: IsHashed -> IsCompressed -> Point -> BS.ByteString
+-- We take hash of a hash for two reasons:
+-- 1. SHA256 can be attacked by length extension attacks ???
+-- 2. RIPEMD160 is 20 bytes instead of SHA256's 32 - space efficiency
+encodePublicKey Hashed = ((RIPEMD160.hash . SHA256.hash) .) . encodePublicKey'
+encodePublicKey NotHashed = encodePublicKey'
+
+encodePublicKey' :: IsCompressed -> Point -> BS.ByteString
+encodePublicKey' Compressed key = [if even key.y then 2 else 3] <> SHA256.wordToByteString 32 key.x -- y can be derived from x given the parity
+encodePublicKey' NotCompressed key = [4] <> SHA256.wordToByteString 32 key.x <> SHA256.wordToByteString 32 key.y -- elliptic curve coordinates are 32 byte
 
 -- | Transform a sequence of bytes into a human-readable code
 base58 :: BS.ByteString -> BS.ByteString
@@ -42,11 +45,11 @@ base58 bytes = ones <> encoded
       where
         (q, r) = n `divMod` 58
 
-bitcoinAddress :: Point -> BS.ByteString -> Bool -> BS.ByteString
+bitcoinAddress :: Point -> BS.ByteString -> IsCompressed -> BS.ByteString
 bitcoinAddress key net compress = base58 $ payload <> checkSum
   where
     version = [if net == "main" then 0 else 0x6f]
-    payload = version <> encodePublicKey key compress True
+    payload = version <> encodePublicKey Hashed compress key
     checkSum = BS.take 4 $ SHA256.hash $ SHA256.hash payload
 
 data Identity = Identity {private :: Integer, public :: Point, address :: BS.ByteString} deriving (Eq, Show)
@@ -55,7 +58,7 @@ testIdentity :: BS.ByteString -> Identity
 testIdentity string = Identity privateKey publicKey addr
   where
     (privateKey, publicKey) = mkKeypairFromString string
-    addr = bitcoinAddress publicKey "test" True
+    addr = bitcoinAddress publicKey "test" Compressed
 
 newtype Script = Script {getScript :: [BS.ByteString]}
 
@@ -112,8 +115,8 @@ encodeTxIn override tx = BS.concat [BS.reverse tx.prevTx, i2LEBS 4 tx.prevIndex,
     script (Pubkey s) = encodeScript s
     script Empty = encodeScript $ Script []
 
-encodeTx :: Tx -> Maybe (Integer, Script) -> BS.ByteString
-encodeTx tx sig =
+encodeTx :: Maybe (Integer, Script) -> Tx -> BS.ByteString
+encodeTx sig tx =
   BS.concat $
     [i2LEBS 4 tx.version, i2VarLEBS (length tx.ins)]
       <> ins' sig
@@ -125,6 +128,13 @@ encodeTx tx sig =
     ins' (Just (sigIndex, s)) = zipWith (\i -> encodeTxIn $ if i == sigIndex then Pubkey s else Empty) [0 ..] tx.ins
 
 encodeSignature :: Signature -> BS.ByteString
-encodeSignature = [0x30, len content] <> content
+encodeSignature (Signature r s) = [0x30, fromIntegral $ BS.length content] <> content
   where
-    content = []
+    content = derN r <> derN s
+    derN n = [0x02, fromIntegral $ BS.length val] <> val
+      where
+        nb = BS.dropWhile (== 0) $ SHA256.wordToByteString 32 n
+        val = (if BS.head nb >= 0x80 then [0] else []) <> nb
+
+txId :: Tx -> Integer
+txId = SHA256.bytesToInt . BS.unpack . BS.reverse . SHA256.hash . SHA256.hash . encodeTx Nothing

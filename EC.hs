@@ -129,6 +129,14 @@ signMessage privateKey message = do
     then signMessage privateKey message -- Just try again
     else pure $ Signature r s
 
+-- | UNSAFE!!! IN EVERY SENSE OF THIS WORD
+signMessage' :: Integer -> B.ByteString -> Integer -> Signature
+signMessage' privateKey message k = Signature r s
+  where
+    p = scalarMultiply k curve.basePoint
+    r = p.x `mod` curve.order
+    s = ((hashMessage message + r * privateKey) * inverseMod k curve.order) `mod` curve.order
+
 verifySignature :: Point -> B.ByteString -> Signature -> Bool
 verifySignature publicKey message (Signature r s) = (r `mod` curve.order) == (p.x `mod` curve.order)
   where

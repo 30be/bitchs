@@ -57,7 +57,7 @@ chunksOf :: Int -> [a] -> [[a]]
 chunksOf _ [] = []
 chunksOf n xs = take n xs : chunksOf n (drop n xs)
 
--- Turn a sequence of bytes, containing n bits to an Integer
+-- Turn a sequence of bytes, containing n bits to an Integer, BE
 bytesToInt :: [Word8] -> Integer
 bytesToInt bytes = foldr (.|.) 0 $ zipWith (.<<.) (fromIntegral <$> bytes) [bits - 8, bits - 16 .. 0]
   where

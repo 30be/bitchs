@@ -7,13 +7,14 @@
 
 module Main where
 
-import Bitcoin (Script (Script), TxIn (..), TxOut (..), testIdentity)
+import Bitcoin (IsCompressed (Compressed), IsHashed (..), Script (Script), Tx (..), TxIn (..), TxOut (..), testIdentity)
 import qualified Bitcoin as BTC
 import qualified Data.ByteString as B
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC8
-import EC (Curve (..), Point (..), mkKeypair, mkKeypairFromString, scalarMultiply, signMessage, verifySignature)
+import EC (Point (..), mkKeypair, scalarMultiply, signMessage, signMessage', verifySignature)
 import Numeric (showHex)
+import SHA256 (bytesToInt)
 import qualified SHA256
 
 testKeyExchange :: IO ()
@@ -63,14 +64,19 @@ testBlockChain = do
       opEqualVerify = [136]
       opCheckSig = [172]
       txIdHash = SHA256.wordToByteString 20 (0x65ca433e32228302b9bc76c87d7e83742ae2f69d :: Integer) -- Serialized public key - it was computed by the faucet from the provided address
-      bob_pkb_hash = BTC.encodePublicKey bob.public True True -- the same as txIdHash; it shows who is the owner of the cash now.
-      alice_pkb_hash = BTC.encodePublicKey alice.public True True
+      bob_pkb_hash = BTC.encodePublicKey Hashed Compressed bob.public -- the same as txIdHash; it shows who is the owner of the cash now.
+      alice_pkb_hash = BTC.encodePublicKey Hashed Compressed alice.public
       -- This is a transaction from a btc-testnet faucet to Bob (tx=transaction)
+      totallyRandomNumber = SHA256.bytesToInt $ BS.unpack "https://xkcd.com/221/"
       txIn =
         BTC.TxIn
           { prevTx = SHA256.wordToByteString 32 (0x30cfb03e95b700b27dec4e42d172bc779eb85957d5b16f67da696a7588c07e64 :: Integer),
             prevIndex = 1, -- 0th index came to the sender back (they did not spend the entirety of their money)
-            scriptSig = Script [opDup, opHash160, txIdHash, opEqualVerify, opCheckSig], -- Common pattern
+            scriptSig =
+              Script
+                [ BTC.encodeSignature (signMessage' bob.private scriptSubstitutedEncodedTransaction totallyRandomNumber) <> [1], -- 1 = SIGHASH_ALL, type of the signature
+                  BTC.encodePublicKey NotHashed Compressed bob.public
+                ],
             _sequence = 0xffffffff
           }
       txToAlice =
@@ -84,12 +90,24 @@ testBlockChain = do
           { amount = 49000, -- Actually, just 136 sat was enough fee to transfer what we had, but I set a 1000 to be sure
             scriptPubkey = Script [opDup, opHash160, bob_pkb_hash, opEqualVerify, opCheckSig] -- We are sending 50 000 satoshi to alice
           }
-  -- The rest goes to Bob back, with 2500 of them as fee
-
-  -- At each transaction, we are spending the entirety of money received.
+      tx =
+        Tx
+          { version = 1,
+            locktime = 0,
+            ins = [txIn],
+            outs = [txBack, txToAlice]
+          }
+      sourceScript = Script [opDup, opHash160, txIdHash, opEqualVerify, opCheckSig]
+      scriptSubstitutedEncodedTransaction = BTC.encodeTx (Just (0, sourceScript)) tx -- Where exactly do I sign what to do with my money???
+      encodedTransaction = BTC.encodeTx Nothing tx
   putStrLn $ "Alice's " <> show alice
   putStrLn $ "Bob's " <> show bob
   putStrLn $ const "Bob's hash (should match with the faucet's one):" <> showHex (SHA256.bytesToInt $ BS.unpack bob_pkb_hash) $ ""
+  putStrLn $ const "transaction:" <> showHex (SHA256.bytesToInt $ BS.unpack encodedTransaction) $ ""
+  -- Then I just broadcast it with an online service: https://blockstream.info/testnet/tx/push
+  putStrLn $ "transaction length in bytes (should be about 225):" <> show (BS.length encodedTransaction)
+  putStrLn $ const "transaction link (wait a little): https://mempool.space/testnet/tx/" <> showHex (BTC.txId tx) $ ""
+
   return ()
 
 main :: IO ()

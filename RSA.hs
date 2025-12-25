@@ -1,4 +1,5 @@
--- TODO: Not tested, at all
+-- WARNING: Not tested, at all
+-- Cool thing that it is not used
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
